@@ -28,7 +28,7 @@ def check_pin():
 
 COLUMNS = ["date", "dutch", "exercise", "mindfulness", "screen_time", "notes", "ignore"]
 
-DB_PATH = "habit_tracker.db"
+DB_PATH = "habit_tracker_v2.db"
 
 @st.cache_resource
 def get_connection():
