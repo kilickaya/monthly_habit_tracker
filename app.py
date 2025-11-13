@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from PIL import Image, ImageDraw, ImageFont
-import sqlite3  # <- NEW
+import sqlite3
 
 def check_pin():
     expected = st.secrets.get("APP_PIN", os.environ.get("APP_PIN"))
@@ -28,8 +28,6 @@ def check_pin():
 
 COLUMNS = ["date", "dutch", "exercise", "mindfulness", "screen_time", "notes", "ignore"]
 
-# ---------- NEW: SQLite helpers ----------
-
 DB_PATH = "habit_tracker.db"
 
 @st.cache_resource
@@ -44,7 +42,8 @@ def get_connection():
         CREATE TABLE IF NOT EXISTS habits (
             date TEXT PRIMARY KEY,
             dutch INTEGER NOT NULL,
-            exercise INTEGER NOT NULL,
+            exercise TEXT,
+            exercise_old INTEGER DEFAULT 0,
             mindfulness INTEGER NOT NULL,
             screen_time TEXT,
             notes TEXT,
@@ -60,7 +59,7 @@ def init_month_df(year: int, month: int) -> pd.DataFrame:
     df = pd.DataFrame({
         "date": dates,
         "dutch": False,
-        "exercise": False,
+        "exercise": "",
         "mindfulness": False,
         "screen_time": "",
         "notes": "",
@@ -69,7 +68,6 @@ def init_month_df(year: int, month: int) -> pd.DataFrame:
     return df
 
 def load_month_from_db(year: int, month: int) -> pd.DataFrame:
-    """Load a full month from DB; fallback to fresh month where missing."""
     base_df = init_month_df(year, month)
     conn = get_connection()
     last_day = calendar.monthrange(year, month)[1]
@@ -92,8 +90,9 @@ def load_month_from_db(year: int, month: int) -> pd.DataFrame:
 
     db_df = pd.DataFrame(rows, columns=COLUMNS)
     db_df["date"] = pd.to_datetime(db_df["date"]).dt.date
-    for col in ["dutch", "exercise", "mindfulness", "ignore"]:
+    for col in ["dutch", "mindfulness", "ignore"]:
         db_df[col] = db_df[col].astype(bool)
+    db_df["exercise"] = db_df["exercise"].fillna("")
 
     merged = base_df.merge(db_df, on="date", how="left", suffixes=("", "_db"))
     for col in COLUMNS[1:]:
@@ -104,13 +103,11 @@ def load_month_from_db(year: int, month: int) -> pd.DataFrame:
     return merged
 
 def save_month_to_db(df: pd.DataFrame):
-    """Upsert the whole month (simple: delete then insert)."""
     if df.empty:
         return
     conn = get_connection()
     cur = conn.cursor()
 
-    # Determine date range of this month
     dates = sorted(df["date"].astype(str).tolist())
     start, end = dates[0], dates[-1]
 
@@ -127,7 +124,7 @@ def save_month_to_db(df: pd.DataFrame):
             (
                 d_str,
                 int(bool(r["dutch"])),
-                int(bool(r["exercise"])),
+                str(r["exercise"] or ""),
                 int(bool(r["mindfulness"])),
                 str(r["screen_time"] or ""),
                 str(r["notes"] or ""),
@@ -144,64 +141,75 @@ def save_month_to_db(df: pd.DataFrame):
     )
     conn.commit()
 
-# ---------- existing helper functions ----------
-
-def parse_screen_minutes(x:str) -> int:
-    if x is None: return 0
+def parse_screen_minutes(x: str) -> int:
+    if x is None:
+        return 0
     s = str(x).strip().lower()
-    if not s: return 0
+    if not s:
+        return 0
     try:
-        if s.isdigit(): return int(s)
+        if s.isdigit():
+            return int(s)
         h, m = 0, 0
         if "h" in s or "m" in s:
             if "h" in s:
-                try: h = int(s.split("h")[0].strip())
-                except: h = 0
-                rest = s.split("h",1)[1]
+                try:
+                    h = int(s.split("h")[0].strip())
+                except:
+                    h = 0
+                rest = s.split("h", 1)[1]
                 if "m" in rest:
-                    try: m = int(rest.split("m")[0].strip())
-                    except: m = 0
+                    try:
+                        m = int(rest.split("m")[0].strip())
+                    except:
+                        m = 0
             elif "m" in s:
-                try: m = int(s.replace("m","").strip())
-                except: m = 0
-            return h*60 + m
+                try:
+                    m = int(s.replace("m", "").strip())
+                except:
+                    m = 0
+            return h * 60 + m
         if ":" in s:
-            hh, mm = s.split(":",1)
-            return int(hh)*60 + int(mm)
+            hh, mm = s.split(":", 1)
+            return int(hh) * 60 + int(mm)
     except:
         return 0
     return 0
 
-def format_minutes(mins:int) -> str:
-    h = int(mins)//60; m = int(mins)%60
+def format_minutes(mins: int) -> str:
+    h = int(mins) // 60
+    m = int(mins) % 60
     return f"{h}h {m}m"
 
 def compute_stats(df: pd.DataFrame) -> dict:
     active = df[~df["ignore"]].copy()
     if active.empty:
-        return dict(dutch=0, exercise=0, mindfulness=0, n=0, avg_screen="0h 0m")
+        return dict(dutch=0, exercise_days=0, mindfulness=0, n=0, avg_screen="0h 0m")
     dutch = int(active["dutch"].sum())
-    exercise = int(active["exercise"].sum())
+    exercise_days = int((active["exercise"].astype(str).str.strip() != "").sum())
     mind = int(active["mindfulness"].sum())
     n = len(active)
     mins = active["screen_time"].apply(parse_screen_minutes).values
     avg_m = int(np.mean(mins)) if len(mins) else 0
     return dict(
-        dutch=dutch, exercise=exercise, mindfulness=mind, n=n,
-        dutch_pct=round(100*dutch/max(n,1)),
-        exercise_pct=round(100*exercise/max(n,1)),
-        mindfulness_pct=round(100*mind/max(n,1)),
-        avg_screen=format_minutes(avg_m)
+        dutch=dutch,
+        exercise_days=exercise_days,
+        mindfulness=mind,
+        n=n,
+        dutch_pct=round(100 * dutch / max(n, 1)),
+        exercise_pct=round(100 * exercise_days / max(n, 1)),
+        mindfulness_pct=round(100 * mind / max(n, 1)),
+        avg_screen=format_minutes(avg_m),
     )
 
 def export_png(df: pd.DataFrame, title: str) -> bytes:
     pad = 20
     row_h = 28
     header_h = 40
-    cols = ["Day","Dutch","Exercise","Mindfulness","Screen Time","Notes","Ignore"]
-    widths = [60,100,100,120,160,260,80]
-    img_w = pad*2 + sum(widths)
-    img_h = pad*2 + header_h + (len(df)+1)*row_h
+    cols = ["Day", "Dutch", "Exercise", "Mindfulness", "Screen Time", "Notes", "Ignore"]
+    widths = [60, 100, 140, 120, 160, 260, 80]
+    img_w = pad * 2 + sum(widths)
+    img_h = pad * 2 + header_h + (len(df) + 1) * row_h
     img = Image.new("RGB", (img_w, img_h), "white")
     draw = ImageDraw.Draw(img)
     try:
@@ -210,11 +218,12 @@ def export_png(df: pd.DataFrame, title: str) -> bytes:
     except:
         font = ImageFont.load_default()
         font_b = font
-    draw.text((pad, pad//2), title, fill="black", font=font_b)
-    x = pad; y = pad + header_h - row_h
+    draw.text((pad, pad // 2), title, fill="black", font=font_b)
+    x = pad
+    y = pad + header_h - row_h
     for w, col in zip(widths, cols):
-        draw.rectangle([x, y, x+w, y+row_h], outline="black")
-        draw.text((x+6, y+6), col, fill="black", font=font_b)
+        draw.rectangle([x, y, x + w, y + row_h], outline="black")
+        draw.text((x + 6, y + 6), col, fill="black", font=font_b)
         x += w
     y0 = pad + header_h
     for _, r in df.iterrows():
@@ -222,15 +231,15 @@ def export_png(df: pd.DataFrame, title: str) -> bytes:
         vals = [
             r["date"].day,
             "✔" if r["dutch"] else "✘",
-            "✔" if r["exercise"] else "✘",
+            (str(r["exercise"]) or "")[:20],
             "✔" if r["mindfulness"] else "✘",
             r["screen_time"],
             (r["notes"] or "")[:40],
-            "✓" if r["ignore"] else ""
+            "✓" if r["ignore"] else "",
         ]
         for w, val in zip(widths, vals):
-            draw.rectangle([x, y0, x+w, y0+row_h], outline="black")
-            draw.text((x+6, y0+6), str(val), fill="black", font=font)
+            draw.rectangle([x, y0, x + w, y0 + row_h], outline="black")
+            draw.text((x + 6, y0 + 6), str(val), fill="black", font=font)
             x += w
         y0 += row_h
     buf = io.BytesIO()
@@ -242,58 +251,60 @@ def export_pdf(df: pd.DataFrame, title: str) -> bytes:
         from reportlab.lib.pagesizes import A4
         from reportlab.pdfgen import canvas
         from reportlab.lib.units import mm
+
         buf = io.BytesIO()
         c = canvas.Canvas(buf, pagesize=A4)
         PAGE_W, PAGE_H = A4
-        margin = 15*mm
+        margin = 15 * mm
         y = PAGE_H - margin
         c.setFont("Helvetica-Bold", 14)
         c.drawString(margin, y, title)
-        y -= 10*mm
-        widths = [12*mm, 24*mm, 24*mm, 30*mm, 50*mm, 70*mm, 18*mm]
-        headers = ["Day","Dutch","Exercise","Mindfulness","Screen Time","Notes","Ignore"]
-        row_h = 7*mm
+        y -= 10 * mm
+        widths = [12 * mm, 24 * mm, 32 * mm, 30 * mm, 50 * mm, 70 * mm, 18 * mm]
+        headers = ["Day", "Dutch", "Exercise", "Mindfulness", "Screen Time", "Notes", "Ignore"]
+        row_h = 7 * mm
         x = margin
         c.setFont("Helvetica-Bold", 9)
         for w, h in zip(widths, headers):
-            c.rect(x, y-row_h, w, row_h)
-            c.drawString(x+2, y-row_h+2, h)
+            c.rect(x, y - row_h, w, row_h)
+            c.drawString(x + 2, y - row_h + 2, h)
             x += w
         y -= row_h
         c.setFont("Helvetica", 9)
         for _, r in df.iterrows():
-            if y < margin + 20*mm:
+            if y < margin + 20 * mm:
                 c.showPage()
                 y = PAGE_H - margin
                 c.setFont("Helvetica-Bold", 14)
                 c.drawString(margin, y, title + " (cont.)")
-                y -= 10*mm
+                y -= 10 * mm
                 c.setFont("Helvetica-Bold", 9)
                 x = margin
                 for w, h in zip(widths, headers):
-                    c.rect(x, y-row_h, w, row_h)
-                    c.drawString(x+2, y-row_h+2, h)
+                    c.rect(x, y - row_h, w, row_h)
+                    c.drawString(x + 2, y - row_h + 2, h)
                     x += w
                 y -= row_h
                 c.setFont("Helvetica", 9)
             vals = [
                 r["date"].day,
                 "✔" if r["dutch"] else "✘",
-                "✔" if r["exercise"] else "✘",
+                (str(r["exercise"]) or "")[:18],
                 "✔" if r["mindfulness"] else "✘",
                 r["screen_time"],
                 (r["notes"] or "")[:60],
-                "✓" if r["ignore"] else ""
+                "✓" if r["ignore"] else "",
             ]
             x = margin
             for w, val in zip(widths, vals):
-                c.rect(x, y-row_h, w, row_h)
-                c.drawString(x+2, y-row_h+2, str(val))
+                c.rect(x, y - row_h, w, row_h)
+                c.drawString(x + 2, y - row_h + 2, str(val))
                 x += w
             y -= row_h
-        c.showPage(); c.save()
+        c.showPage()
+        c.save()
         return buf.getvalue()
-    except Exception as e:
+    except Exception:
         png = export_png(df, title)
         from PIL import Image
         img = Image.open(io.BytesIO(png)).convert("RGB")
@@ -306,17 +317,30 @@ st.title("Monthly Habit Tracker")
 
 check_pin()
 
-colA, colB, colC = st.columns([1,1,2])
+colA, colB, colC = st.columns([1, 1, 2])
 with colA:
-    year = st.number_input("Year", min_value=2000, max_value=2100, value=dt.date.today().year, step=1)
+    year = st.number_input(
+        "Year",
+        min_value=2000,
+        max_value=2100,
+        value=dt.date.today().year,
+        step=1,
+        key="year_input",
+    )
 with colB:
-    month = st.number_input("Month", min_value=1, max_value=12, value=dt.date.today().month, step=1)
+    month = st.number_input(
+        "Month",
+        min_value=1,
+        max_value=12,
+        value=dt.date.today().month,
+        step=1,
+        key="month_input",
+    )
 with colC:
     st.caption("Use 'Ignore' to exclude vacation days from stats.")
 
 key = f"df_{int(year)}_{int(month)}"
 
-# ---------- NEW: load month from DB instead of fresh init ----------
 if key not in st.session_state:
     st.session_state[key] = load_month_from_db(int(year), int(month))
 
@@ -324,12 +348,20 @@ df = st.session_state[key]
 
 with st.expander("Block timeframe (vacation)"):
     days_in_month = calendar.monthrange(int(year), int(month))[1]
-    start_date = st.date_input("Start", value=dt.date(int(year), int(month), 1),
-                               min_value=dt.date(int(year), int(month), 1),
-                               max_value=dt.date(int(year), int(month), days_in_month))
-    end_date = st.date_input("End", value=dt.date(int(year), int(month), min(7, days_in_month)),
-                             min_value=dt.date(int(year), int(month), 1),
-                             max_value=dt.date(int(year), int(month), days_in_month))
+    start_date = st.date_input(
+        "Start",
+        value=dt.date(int(year), int(month), 1),
+        min_value=dt.date(int(year), int(month), 1),
+        max_value=dt.date(int(year), int(month), days_in_month),
+        key=f"vac_start_{year}_{month}",
+    )
+    end_date = st.date_input(
+        "End",
+        value=dt.date(int(year), int(month), min(7, days_in_month)),
+        min_value=dt.date(int(year), int(month), 1),
+        max_value=dt.date(int(year), int(month), days_in_month),
+        key=f"vac_end_{year}_{month}",
+    )
     c1, c2 = st.columns(2)
     if c1.button("Mark Ignored"):
         mask = (df["date"] >= start_date) & (df["date"] <= end_date)
@@ -339,61 +371,83 @@ with st.expander("Block timeframe (vacation)"):
         df.loc[mask, "ignore"] = False
 
 st.subheader(f"Entries for {calendar.month_name[int(month)]} {int(year)}")
+
 cfg = {
     "date": st.column_config.DateColumn("Date", disabled=True, width="small"),
     "dutch": st.column_config.CheckboxColumn("Dutch"),
-    "exercise": st.column_config.CheckboxColumn("Exercise"),
+    "exercise": st.column_config.TextColumn("Exercise (e.g., run, gym, yoga)", width="medium"),
     "mindfulness": st.column_config.CheckboxColumn("Mindfulness"),
     "screen_time": st.column_config.TextColumn("Screen Time (e.g., 6h 15m)"),
     "notes": st.column_config.TextColumn("Notes"),
     "ignore": st.column_config.CheckboxColumn("Ignore"),
 }
-edited = st.data_editor(df, column_config=cfg, hide_index=True, use_container_width=True, num_rows="fixed")
+
+edited = st.data_editor(
+    df,
+    column_config=cfg,
+    hide_index=True,
+    use_container_width=True,
+    num_rows="fixed",
+    key=f"editor_{year}_{month}",  # helps avoid the first-click weirdness
+)
+
 st.session_state[key] = edited
 df = edited
 
-# ---------- NEW: Save to SQLite ----------
-if st.button("💾 Save changes to database", type="primary", key="save_db"):
+if st.button("💾 Save changes to database", type="primary", key=f"save_db_{year}_{month}"):
     save_month_to_db(df)
     st.success("Saved month to SQLite database.")
 
 def parse_minutes_series(s: pd.Series) -> pd.Series:
     def _one(x):
         x = str(x).strip()
-        if not x: return 0
+        if not x:
+            return 0
         xl = x.lower()
-        if xl.isdigit(): return int(xl)
+        if xl.isdigit():
+            return int(xl)
         if ":" in xl:
-            hh, mm = xl.split(":",1)
-            return int(hh)*60 + int(mm)
-        h = 0; m = 0
+            hh, mm = xl.split(":", 1)
+            return int(hh) * 60 + int(mm)
+        h = 0
+        m = 0
         if "h" in xl:
-            try: h = int(xl.split("h")[0].strip())
-            except: h = 0
-            rest = xl.split("h",1)[1]
+            try:
+                h = int(xl.split("h")[0].strip())
+            except:
+                h = 0
+            rest = xl.split("h", 1)[1]
             if "m" in rest:
-                try: m = int(rest.split("m")[0].strip())
-                except: m = 0
+                try:
+                    m = int(rest.split("m")[0].strip())
+                except:
+                    m = 0
         elif "m" in xl:
-            try: m = int(xl.replace("m","").strip())
-            except: m = 0
-        return h*60 + m
+            try:
+                m = int(xl.replace("m", "").strip())
+            except:
+                m = 0
+        return h * 60 + m
+
     return s.apply(_one)
 
 st.subheader("Stats (ignores excluded)")
 active = df[~df["ignore"]].copy()
 n = len(active)
 d_done = int(active["dutch"].sum()) if n else 0
-e_done = int(active["exercise"].sum()) if n else 0
+e_days = int((active["exercise"].astype(str).str.strip() != "").sum()) if n else 0
 m_done = int(active["mindfulness"].sum()) if n else 0
 mins = parse_minutes_series(active["screen_time"]) if n else pd.Series([0])
 avg_m = int(mins.mean()) if n else 0
-def pct(val): return int(round(100*val/max(n,1)))
+
+def pct(val):
+    return int(round(100 * val / max(n, 1)))
+
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Dutch", f"{d_done} / {n}", f"{pct(d_done)}%")
-c2.metric("Exercise", f"{e_done} / {n}", f"{pct(e_done)}%")
+c2.metric("Exercise days", f"{e_days} / {n}", f"{pct(e_days)}%")
 c3.metric("Mindfulness", f"{m_done} / {n}", f"{pct(m_done)}%")
-c4.metric("Avg Screen", f"{avg_m//60}h {avg_m%60}m")
+c4.metric("Avg Screen", f"{avg_m // 60}h {avg_m % 60}m")
 
 st.subheader("Export")
 title = f"Monthly Habit Tracker — {calendar.month_name[int(month)]} {int(year)}"
@@ -401,24 +455,36 @@ colx, coly = st.columns(2)
 with colx:
     if st.button("Export as PNG"):
         png_bytes = export_png(df, title)
-        st.download_button("Download PNG", data=png_bytes, file_name=f"habit_{int(year)}_{int(month):02d}.png", mime="image/png")
+        st.download_button(
+            "Download PNG",
+            data=png_bytes,
+            file_name=f"habit_{int(year)}_{int(month):02d}.png",
+            mime="image/png",
+            key=f"dl_png_{year}_{month}",
+        )
 with coly:
     if st.button("Export as PDF"):
         pdf_bytes = export_pdf(df, title)
-        st.download_button("Download PDF", data=pdf_bytes, file_name=f"habit_{int(year)}_{int(month):02d}.pdf", mime="application/pdf")
+        st.download_button(
+            "Download PDF",
+            data=pdf_bytes,
+            file_name=f"habit_{int(year)}_{int(month):02d}.pdf",
+            mime="application/pdf",
+            key=f"dl_pdf_{year}_{month}",
+        )
 
-# ---------- NEW: Weekly PDF autogenerator ----------
 st.subheader("Weekly PDF export (ISO weeks)")
 weeks = sorted({d.isocalendar()[1] for d in df["date"]})
 if weeks:
     selected_week = st.selectbox(
         "Select ISO week from this month",
         weeks,
-        format_func=lambda w: f"Week {w}"
+        format_func=lambda w: f"Week {w}",
+        key=f"week_select_{year}_{month}",
     )
     week_df = df[df["date"].apply(lambda d: d.isocalendar()[1] == selected_week)]
 
-    if st.button("Export selected week as PDF", key="export_week_pdf"):
+    if st.button("Export selected week as PDF", key=f"export_week_pdf_{year}_{month}_{selected_week}"):
         week_title = (
             f"Weekly Habit Tracker — Week {selected_week} "
             f"({calendar.month_name[int(month)]} {int(year)})"
@@ -429,13 +495,13 @@ if weeks:
             data=week_pdf,
             file_name=f"habit_week{selected_week}_{int(year)}_{int(month):02d}.pdf",
             mime="application/pdf",
-            key="download_week_pdf"
+            key=f"download_week_pdf_{year}_{month}_{selected_week}",
         )
 else:
     st.info("No dates found for this month; nothing to export by week.")
 
 st.caption(
     "Locally, data is stored in a SQLite database file `habit_tracker.db`. "
-    "On Streamlit Community Cloud, local files may be cleared when the app "
-    "restarts — use an external database if you need long-term online storage."
+    "On Streamlit Community Cloud, local files may be cleared when the app restarts — "
+    "use an external database if you need long-term online storage."
 )
