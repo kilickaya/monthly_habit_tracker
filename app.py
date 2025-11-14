@@ -28,35 +28,59 @@ def check_pin():
 
 COLUMNS = ["date", "dutch", "exercise", "mindfulness", "screen_time", "notes", "ignore"]
 LOCAL_DB_PATH = "habit_tracker_v2.db"
+from sqlalchemy import create_engine, text
 
 @st.cache_resource
 def get_engine():
     db_url = st.secrets.get("DB_URL", os.environ.get("DB_URL"))
-    if db_url:
-        engine = create_engine(db_url, pool_pre_ping=True)
-    else:
+    try:
+        if db_url:
+            engine = create_engine(db_url, pool_pre_ping=True)
+        else:
+            engine = create_engine(
+                f"sqlite:///{LOCAL_DB_PATH}",
+                connect_args={"check_same_thread": False},
+            )
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS habits (
+                        date TEXT PRIMARY KEY,
+                        dutch INTEGER NOT NULL,
+                        exercise TEXT,
+                        mindfulness INTEGER NOT NULL,
+                        screen_time TEXT,
+                        notes TEXT,
+                        ignore INTEGER NOT NULL
+                    )
+                    """
+                )
+            )
+        return engine
+    except Exception as e:
+        st.error("Could not connect to remote database. Using local SQLite instead.")
         engine = create_engine(
             f"sqlite:///{LOCAL_DB_PATH}",
             connect_args={"check_same_thread": False},
         )
-    with engine.begin() as conn:
-        conn.execute(
-            text(
-                """
-                CREATE TABLE IF NOT EXISTS habits (
-                    date TEXT PRIMARY KEY,
-                    dutch INTEGER NOT NULL,
-                    exercise TEXT,
-                    mindfulness INTEGER NOT NULL,
-                    screen_time TEXT,
-                    notes TEXT,
-                    ignore INTEGER NOT NULL
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS habits (
+                        date TEXT PRIMARY KEY,
+                        dutch INTEGER NOT NULL,
+                        exercise TEXT,
+                        mindfulness INTEGER NOT NULL,
+                        screen_time TEXT,
+                        notes TEXT,
+                        ignore INTEGER NOT NULL
+                    )
+                    """
                 )
-                """
             )
-        )
-    return engine
-
+        return engine
 def init_month_df(year: int, month: int) -> pd.DataFrame:
     days = calendar.monthrange(year, month)[1]
     dates = [dt.date(year, month, d) for d in range(1, days + 1)]
