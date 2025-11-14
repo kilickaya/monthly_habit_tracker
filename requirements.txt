@@ -1,5 +1,6 @@
-streamlit
-pandas
-numpy
-pillow
+sqlalchemy
+psycopg2-binary
 reportlab
+pillow
+pandas
+streamlit
