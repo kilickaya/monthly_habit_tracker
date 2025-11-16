@@ -29,18 +29,17 @@ def check_pin():
 COLUMNS = ["date", "dutch", "exercise", "mindfulness", "screen_time", "notes", "ignore"]
 LOCAL_DB_PATH = "habit_tracker_v2.db"
 from sqlalchemy import create_engine, text
-
 @st.cache_resource
 def get_engine():
-    db_url = st.secrets.get("DB_URL", os.environ.get("DB_URL"))
-    try:
-        if db_url:
-            engine = create_engine(db_url, pool_pre_ping=True)
-        else:
-            engine = create_engine(
-                f"sqlite:///{LOCAL_DB_PATH}",
-                connect_args={"check_same_thread": False},
-            )
+    db_url = st.secrets.get("DB_URL") or os.environ.get("DB_URL")
+    st.write("DB_URL present:", bool(db_url))
+
+    if not db_url:
+        st.warning("DB_URL is not set, using local SQLite.")
+        engine = create_engine(
+            f"sqlite:///{LOCAL_DB_PATH}",
+            connect_args={"check_same_thread": False},
+        )
         with engine.begin() as conn:
             conn.execute(
                 text(
@@ -58,8 +57,31 @@ def get_engine():
                 )
             )
         return engine
+
+    try:
+        st.write("Attempting to connect to remote database")
+        engine = create_engine(db_url, pool_pre_ping=True)
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS habits (
+                        date TEXT PRIMARY KEY,
+                        dutch INTEGER NOT NULL,
+                        exercise TEXT,
+                        mindfulness INTEGER NOT NULL,
+                        screen_time TEXT,
+                        notes TEXT,
+                        ignore INTEGER NOT NULL
+                    )
+                    """
+                )
+            )
+        st.success("Connected to remote database.")
+        return engine
     except Exception as e:
-        st.error("Could not connect to remote database. Using local SQLite instead.")
+        st.exception(e)
+        st.error("Could not connect to remote database, falling back to local SQLite.")
         engine = create_engine(
             f"sqlite:///{LOCAL_DB_PATH}",
             connect_args={"check_same_thread": False},
