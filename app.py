@@ -153,11 +153,15 @@ def load_month_from_db(year: int, month: int) -> pd.DataFrame:
             merged.drop(columns=[db_col], inplace=True)
     return merged
 
+from sqlalchemy import text
+
 def save_month_to_db(df: pd.DataFrame):
     if df.empty:
         return
+
     engine = get_engine()
     df2 = df.copy()
+
     df2["date"] = df2["date"].apply(
         lambda d: d.isoformat() if isinstance(d, dt.date) else str(d)
     )
@@ -167,19 +171,22 @@ def save_month_to_db(df: pd.DataFrame):
     df2["exercise"] = df2["exercise"].fillna("").astype(str)
     df2["screen_time"] = df2["screen_time"].fillna("").astype(str)
     df2["notes"] = df2["notes"].fillna("").astype(str)
-    dates = sorted(df2["date"].tolist())
-    start, end = dates[0], dates[-1]
-    delete_q = text(
-        "DELETE FROM habits WHERE date BETWEEN :start AND :end"
-    )
+
     insert_q = text(
         """
         INSERT INTO habits (date, dutch, exercise, mindfulness, screen_time, notes, ignore)
         VALUES (:date, :dutch, :exercise, :mindfulness, :screen_time, :notes, :ignore)
+        ON CONFLICT(date) DO UPDATE SET
+            dutch = EXCLUDED.dutch,
+            exercise = EXCLUDED.exercise,
+            mindfulness = EXCLUDED.mindfulness,
+            screen_time = EXCLUDED.screen_time,
+            notes = EXCLUDED.notes,
+            ignore = EXCLUDED.ignore
         """
     )
+
     with engine.begin() as conn:
-        conn.execute(delete_q, {"start": start, "end": end})
         conn.execute(insert_q, df2.to_dict(orient="records"))
 
 def export_pdf(df: pd.DataFrame, title: str) -> bytes:
